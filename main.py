@@ -33,7 +33,7 @@ if belief_actorcritic:
     data = torch.load('..//Data//actorcritic.pt')
     bg, algo = data['net'], data['algo']
     pfc, bg, stim, resp, stria, vals, performance = combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10,
-                                                          context=(.65, .85), rewards=(20, -200, -2), seed=1)
+                                                          context=(.65, .85), rewards=(20, -200, -2), gains=(1, 1), seed=1)
     torch.save({'beliefnet': pfc, 'actorcritic': bg, 'stim': stim, 'pfc': resp, 'stria': stria,
                 'vals': vals, 'performance': performance}, '..//Data//belief_actorcritic.pt')
 

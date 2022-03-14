@@ -4,6 +4,7 @@ import torch
 import itertools
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
+from itertools import cycle
 from model import Network, Task, Algorithm
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
@@ -24,6 +25,10 @@ def td(r, v, v_old, h_old, s_old, ws, wc, wa, gamma, var, lam, lr_ws, lr_wc, lr_
     wc += lr_wc * delta * h_old
     wa += (lr_wa / lam) * delta * h_old
     return delta, ws, wc, wa
+
+
+def gain(delta, gains):
+    return delta * gains[0] if delta > 0 else delta * gains[1]
 
 
 def train_pfc(arch='PFC', N=128, S=2, R=2, task='beads-belief', maxsamples=10, context=(.65, .85),
@@ -225,7 +230,8 @@ def train_bg(arch='BG', N=64, S=2, Rc=1, Ra=3, task='beads-choice', maxsamples=1
     return net, task, algo, learning
 
 
-def combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10, context=(.65, .85), rewards=(20, -200, -2), seed=1):
+def combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10, context=(.65, .85),
+                   rewards=(20, -200, -2), gains=(1, 1), seed=1):
 
     npr.seed(seed=seed)
     # frequently used vars
@@ -312,7 +318,7 @@ def combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10, context=(.6
 
                     # weight updates
                     if sample > 0:
-                        delta[sample] = r + bg.gam * c - ca[sample - 1]
+                        delta[sample] = gain(r + bg.gam * c - ca[sample - 1], gains)
                         bg.ws += lr_ws * delta[sample] * np.tile(bg.wc * ma[sample - 1], [2, 1]).T * 2 * (
                                     sa[sample - 1] - bg.ws) / bg.var
                         bg.wc += lr_wc * delta[sample] * ma[sample - 1]
@@ -331,7 +337,7 @@ def combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10, context=(.6
             Iin = np.matmul(pfc.ws, np.array([s, context])[:, None])     # input current
             Irec = np.matmul(pfc.J, h)                          # recurrent current
             z = Iin + Irec                                      # potential
-            h = (1 - dt) * h + dt * (pfc.f(z))                  # activity
+            h = (1 - dt) * h + dt * (pfc.f(z))  # + 0.02 * npr.rand(N_pfc, 1)                  # activity
             u = np.matmul(pfc.wr, h)                            # output
 
             # striatal update
@@ -370,7 +376,7 @@ def combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10, context=(.6
 
                 # weight updates
                 if sample > 0:
-                    delta[sample] = r + bg.gam * c - ca[sample - 1]
+                    delta[sample] = gain(r + bg.gam * c - ca[sample - 1], gains)
                     bg.ws += lr_ws * delta[sample] * np.tile(bg.wc * ma[sample - 1], [2, 1]).T * 2 * (
                             sa[sample - 1] - bg.ws) / bg.var
                     bg.wc += lr_wc * delta[sample] * ma[sample - 1]
@@ -565,7 +571,10 @@ def plot_actorcritic(data, seed=1):
     nochoice = np.sum(np.array(learning['actions'])[trl:][np.array(learning['contexts'])[0, trl:] == 0.85] == 2)
     correct, incorrect = correct_A + correct_B, incorrect_A + incorrect_B
     total = correct + incorrect + nochoice
-    plt.bar([0, 1, 2], np.array([correct / total, incorrect / total, nochoice / total]), width=0.7)
+    prop_cycle = plt.rcParams['axes.prop_cycle']
+    colors = cycle(prop_cycle.by_key()['color'])
+    next(colors)
+    plt.bar([0, 1, 2], np.array([correct / total, incorrect / total, nochoice / total]), width=0.7, color=next(colors))
     plt.ylim((0, 1)), plt.xticks(ticks=[0, 1, 2], labels=['correct', 'incorrect', 'no response'])
     plt.legend(['easy context'])
     plt.ylabel('Probability')
@@ -590,13 +599,14 @@ def plot_belief_actorcritic(data, seed=1):
                                        data['performance']['actions'], data['performance']['samples']
 
     # load activity variables
-    pfc, striatum, dopamine = data['pfc'], data['stria'], data['performance']['rpes']
+    pfc, striatum, dopamine = data['pfc'], data['stria'], np.array(data['performance']['rpes'])[:, :, 0]
+    Nepochs = np.shape(samples)[0]
+    NT_samples = 100
+    N_bg = data['actorcritic'].N
 
     # trials types
     trl_diff = (np.array(contexts) == 0.65).flatten()
     trl_easy = (np.array(contexts) == 0.85).flatten()
-    samples_diff = np.median(np.array(samples)[trl_diff])
-    samples_easy = np.median(np.array(samples)[trl_easy])
     trl_A = (np.array(jars) == 0).flatten()
     trl_B = (np.array(jars) == 1).flatten()
 
@@ -604,26 +614,7 @@ def plot_belief_actorcritic(data, seed=1):
     fig = plt.figure(constrained_layout=True)
     gs = GridSpec(2, 6, figure=fig)
 
-    trl_diffmedianA = np.bitwise_and.reduce((trl_diff, np.array(samples) <= samples_diff, trl_A))
-    pfc_diffA = pfc[trl_diffmedianA, :(100 * int(samples_diff))]
-    pfc_diffA[pfc_diffA == 0] = 'nan'
-    trl_diffmedianB = np.bitwise_and.reduce((trl_diff, np.array(samples) <= samples_diff, trl_B))
-    pfc_diffB = pfc[trl_diffmedianB, :(100 * int(samples_diff))]
-    pfc_diffB[pfc_diffB == 0] = 'nan'
-    pfc_diff = np.array([np.nanmean(pfc_diffA, axis=0), 1 - np.nanmean(pfc_diffB, axis=0)]).mean(axis=0)
-
-    trl_easymedianA = np.bitwise_and.reduce((trl_easy, np.array(samples) <= samples_easy, trl_A))
-    pfc_easyA = pfc[trl_easymedianA, :(100 * int(samples_easy + 1))]
-    pfc_easyA[pfc_easyA == 0] = 'nan'
-    trl_easymedianB = np.bitwise_and.reduce((trl_easy, np.array(samples) <= samples_easy, trl_B))
-    pfc_easyB = pfc[trl_easymedianB, :(100 * int(samples_easy + 1))]
-    pfc_easyB[pfc_easyB == 0] = 'nan'
-    pfc_easy = np.array([np.nanmean(pfc_easyA, axis=0), 1 - np.nanmean(pfc_easyB, axis=0)]).mean(axis=0)
-
-    ax1 = fig.add_subplot(gs[0, :2])
-    plt.plot(pfc_diff[:, 1]), plt.plot(pfc_diff[:, 0], alpha=0.5)
-    plt.plot(pfc_easy[:, 1]), plt.plot(pfc_easy[:, 0], alpha=0.5)
-
+    # accuracy in difficult context
     correct_A = np.sum(np.array(actions)[np.bitwise_and(trl_diff, np.array(jars) == 0)] == 0)
     correct_B = np.sum(np.array(actions)[np.bitwise_and(trl_diff, np.array(jars) == 1)] == 1)
     incorrect_A = np.sum(np.array(actions)[np.bitwise_and(trl_diff, np.array(jars) == 0)] == 1)
@@ -631,12 +622,13 @@ def plot_belief_actorcritic(data, seed=1):
     nochoice = np.sum(np.array(actions)[trl_diff] == 2)
     correct, incorrect = correct_A + correct_B, incorrect_A + incorrect_B
     total = correct + incorrect + nochoice
-    ax5 = fig.add_subplot(gs[1, :2])
+    ax1 = fig.add_subplot(gs[0, :2])
     plt.bar([0, 1, 2], np.array([correct / total, incorrect / total, nochoice / total]), width=0.7)
     plt.ylim((0, 1)), plt.xticks(ticks=[0, 1, 2], labels=['correct', 'incorrect', 'no response'])
     plt.legend(['difficult context'])
     plt.ylabel('Probability')
 
+    # accuracy in easy context
     correct_A = np.sum(np.array(actions)[np.bitwise_and(trl_easy, np.array(jars) == 0)] == 0)
     correct_B = np.sum(np.array(actions)[np.bitwise_and(trl_easy, np.array(jars) == 1)] == 1)
     incorrect_A = np.sum(np.array(actions)[np.bitwise_and(trl_easy, np.array(jars) == 0)] == 1)
@@ -644,13 +636,17 @@ def plot_belief_actorcritic(data, seed=1):
     nochoice = np.sum(np.array(actions)[trl_easy] == 2)
     correct, incorrect = correct_A + correct_B, incorrect_A + incorrect_B
     total = correct + incorrect + nochoice
-    ax4 = fig.add_subplot(gs[1, 2:4])
-    plt.bar([0, 1, 2], np.array([correct / total, incorrect / total, nochoice / total]), width=0.7)
+    ax2 = fig.add_subplot(gs[0, 2:4])
+    prop_cycle = plt.rcParams['axes.prop_cycle']
+    colors = cycle(prop_cycle.by_key()['color'])
+    next(colors)
+    plt.bar([0, 1, 2], np.array([correct / total, incorrect / total, nochoice / total]), width=0.7, color=next(colors))
     plt.ylim((0, 1)), plt.xticks(ticks=[0, 1, 2], labels=['correct', 'incorrect', 'no response'])
     plt.legend(['easy context'])
     plt.ylabel('Probability')
 
-    ax6 = fig.add_subplot(gs[1, 4:])
+    # number of samples to decision
+    ax3 = fig.add_subplot(gs[0, 4:])
     x1, y1 = ecdf(np.array(samples)[trl_diff])
     x1 = np.insert(x1, 0, x1[0])
     y1 = np.insert(y1, 0, 0.)
@@ -661,3 +657,107 @@ def plot_belief_actorcritic(data, seed=1):
     plt.plot(x2, y2, drawstyle='steps-post')
     plt.legend(['difficult context', 'easy context'], loc='best')
     plt.xlabel('Number of samples'), plt.ylabel('Cumulative prob.')
+
+    # pfc output activity
+    samples_diff = np.median(np.array(samples)[trl_diff])
+    samples_easy = np.median(np.array(samples)[trl_easy])
+    trl_diffmedianA = np.bitwise_and.reduce((trl_diff, np.array(samples) <= samples_diff, trl_A))
+    pfc_diffA = pfc[trl_diffmedianA, :(NT_samples * int(samples_diff))]
+    pfc_diffA[pfc_diffA == 0] = 'nan'
+    trl_diffmedianB = np.bitwise_and.reduce((trl_diff, np.array(samples) <= samples_diff, trl_B))
+    pfc_diffB = pfc[trl_diffmedianB, :(NT_samples * int(samples_diff))]
+    pfc_diffB[pfc_diffB == 0] = 'nan'
+    pfc_diff = np.array([np.nanmean(pfc_diffA, axis=0), 1 - np.nanmean(pfc_diffB, axis=0)]).mean(axis=0)
+
+    trl_easymedianA = np.bitwise_and.reduce((trl_easy, np.array(samples) <= samples_easy, trl_A))
+    pfc_easyA = pfc[trl_easymedianA, :(NT_samples * int(samples_easy + 1))]
+    pfc_easyA[pfc_easyA == 0] = 'nan'
+    trl_easymedianB = np.bitwise_and.reduce((trl_easy, np.array(samples) <= samples_easy, trl_B))
+    pfc_easyB = pfc[trl_easymedianB, :(NT_samples * int(samples_easy + 1))]
+    pfc_easyB[pfc_easyB == 0] = 'nan'
+    pfc_easy = np.array([np.nanmean(pfc_easyA, axis=0), 1 - np.nanmean(pfc_easyB, axis=0)]).mean(axis=0)
+
+    ax4 = fig.add_subplot(gs[1, :2])
+    plt.plot(pfc_diff[:, 1]), plt.plot(pfc_easy[:, 1])
+    plt.gca().set_prop_cycle(None)
+    plt.plot(pfc_diff[:, 0], alpha=0.5), plt.plot(pfc_easy[:, 0], alpha=0.5)
+    plt.xlabel('Time'), plt.ylabel('Average output')
+
+    # striatal activity
+    b_pref = np.array(data['actorcritic'].ws)[:, 0] - np.array(data['actorcritic'].ws)[:, 1]
+    sorted_by_pref = np.argsort(np.abs(b_pref))
+
+    thresh_resp = 0.32
+    trl_diffmedianA = np.bitwise_and.reduce((trl_diff, np.array(samples) == samples_diff, trl_A))
+    trl_diffmedianB = np.bitwise_and.reduce((trl_diff, np.array(samples) == samples_diff, trl_B))
+    trl_diffmedian = np.bitwise_or(trl_diffmedianA, trl_diffmedianB)
+    stria_diff = striatum[trl_diffmedian, (NT_samples * int(samples_diff-3)):(NT_samples * int(samples_diff)), :]
+    stria_diff[stria_diff == 0] = 'nan'
+    stria_diff = np.nanmean(stria_diff[:, :, sorted_by_pref], axis=0)
+    largeresponse = np.max(stria_diff, axis=0) > thresh_resp
+    stria_diff = stria_diff[:, largeresponse]
+    stria_diff /= np.tile(np.max(stria_diff, axis=0), [NT_samples * int(3), 1])
+    ax4 = fig.add_subplot(gs[1, 2])
+    plt.imshow(stria_diff.T, cmap='Blues'), plt.axis('tight')
+    plt.xticks(ticks=[0, 100, 200], labels=['300', '200', '100']), plt.xlabel('Time to decision'), plt.ylabel('Neuron')
+
+    thresh_resp = 0.34      # only plot neurons with peak activity above threshold
+    trl_easymedianA = np.bitwise_and.reduce((trl_easy, np.array(samples) == samples_easy, trl_A))
+    trl_easymedianB = np.bitwise_and.reduce((trl_easy, np.array(samples) == samples_easy, trl_B))
+    trl_easymedian = np.bitwise_or(trl_easymedianA, trl_easymedianB)
+    stria_easy = striatum[trl_easymedian, :(NT_samples * int(samples_easy)), :]
+    stria_easy = np.nanmean(stria_easy[:, :, sorted_by_pref], axis=0)
+    largeresponse = np.max(stria_easy, axis=0) > thresh_resp
+    stria_easy = stria_easy[:, largeresponse]
+    stria_easy /= np.tile(np.max(stria_easy, axis=0), [NT_samples * int(samples_easy), 1])
+    ax4 = fig.add_subplot(gs[1, 3])
+    plt.imshow(stria_easy.T, cmap='Oranges'), plt.axis('tight')
+    plt.xticks(ticks=[0, 100], labels=['200', '100']), plt.xlabel('Time to decision'), plt.ylabel('Neuron')
+
+    # dopamine activity aligned to start
+    da_easy = dopamine[np.bitwise_and(np.array(samples) > 1, trl_easy), :]
+    da_easy = np.nanmean(da_easy, axis=0)
+    da_diff = dopamine[np.bitwise_and(np.array(samples) > 1, trl_diff), :]
+    da_diff = np.nanmean(da_diff, axis=0)
+    ax4 = fig.add_subplot(gs[1, 4])
+    plt.plot(da_diff), plt.plot(da_easy)
+    plt.xlabel('Sample'), plt.ylabel('Reward Prediction Error')
+
+    # dopamine activity aligned to reward
+    correct = np.bitwise_xor(jars, actions) == 0
+    idx_easy = np.nonzero(np.bitwise_and.reduce((np.array(samples) > 1, trl_easy, correct)))[0]
+    da_easy = np.empty((Nepochs, np.shape(dopamine)[1]))
+    da_easy[:] = 'nan'
+    for idx in idx_easy:
+        sample = np.array(samples)[idx]
+        da_easy[idx, -sample:] = dopamine[idx, :sample]
+    idx_diff = np.nonzero(np.bitwise_and.reduce((np.array(samples) > 1, trl_diff, correct)))[0]
+    da_diff = np.empty((Nepochs, np.shape(dopamine)[1]))
+    da_diff[:] = 'nan'
+    for idx in idx_diff:
+        sample = np.array(samples)[idx]
+        da_diff[idx, -sample:] = dopamine[idx, :sample]
+    ax4 = fig.add_subplot(gs[1, 5])
+    plt.plot(np.nanmean(da_diff, axis=0)), plt.plot(np.nanmean(da_easy, axis=0))
+
+    incorrect = np.bitwise_xor(jars, actions) == 1
+    idx_easy = np.nonzero(np.bitwise_and.reduce((np.array(samples) > 1, trl_easy, incorrect)))[0]
+    da_easy = np.empty((Nepochs, np.shape(dopamine)[1]))
+    da_easy[:] = 'nan'
+    for idx in idx_easy:
+        sample = np.array(samples)[idx]
+        da_easy[idx, -sample:] = dopamine[idx, :sample]
+    idx_diff = np.nonzero(np.bitwise_and.reduce((np.array(samples) > 1, trl_diff, incorrect)))[0]
+    da_diff = np.empty((Nepochs, np.shape(dopamine)[1]))
+    da_diff[:] = 'nan'
+    for idx in idx_diff:
+        sample = np.array(samples)[idx]
+        da_diff[idx, -sample:] = dopamine[idx, :sample]
+    ax4 = fig.add_subplot(gs[1, 5])
+    plt.gca().set_prop_cycle(None)
+    plt.plot(np.nanmean(da_diff, axis=0), alpha=0.5), plt.plot(np.nanmean(da_easy, axis=0), alpha=0.5)
+    plt.xlim((5, 10))
+    plt.xticks(ticks=[5, 6, 7, 8], labels=['4', '3', '2', '1']),
+    plt.xlabel('Samples to decision')
+    plt.legend(['diff_corr', 'easy_corr', 'diff_incorr', 'easy_incorr'], loc='lower left')
+    plt.show()
