@@ -1,7 +1,8 @@
-from train import train_pfc, train_bg, combine_pfc_bg, plot_beliefnet, plot_actorcritic, plot_belief_actorcritic
+from train import train_pfc, train_bg, combine_pfc_bg, \
+    plot_beliefnet, plot_actorcritic, plot_belief_actorcritic, plot_schizo
 import torch
 
-train_beliefnet, train_actorcritic, belief_actorcritic, plot_models = False, False, True, True
+train_beliefnet, train_actorcritic, belief_actorcritic, schizonet, plot_models = False, False, False, True, True
 
 if train_beliefnet:
     # initialize
@@ -33,17 +34,35 @@ if belief_actorcritic:
     data = torch.load('..//Data//actorcritic.pt')
     bg, algo = data['net'], data['algo']
     pfc, bg, stim, resp, stria, vals, performance = combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10,
-                                                          context=(.65, .85), rewards=(20, -200, -2), gains=(1, 1), seed=1)
+                                                                   context=(.65, .85), rewards=(20, -200, -2),
+                                                                   gains=(1, 1), seed=1)
     torch.save({'beliefnet': pfc, 'actorcritic': bg, 'stim': stim, 'pfc': resp, 'stria': stria,
                 'vals': vals, 'performance': performance}, '..//Data//belief_actorcritic.pt')
+
+if schizonet:
+    # initialize
+    print('\r Running Combined models', end='\n')
+    data = torch.load('..//Data//beliefnet.pt')
+    pfc, task = data['net'], data['task']
+    data = torch.load('..//Data//actorcritic.pt')
+    bg, algo = data['net'], data['algo']
+    pfc, bg, stim, resp, stria, vals, performance = combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10,
+                                                                   context=(.65, .85), noise=0, circular=True,
+                                                                   rewards=(20, -200, -2), gains=(1, 1), amplification=1,
+                                                                   seed=1)
+    torch.save({'beliefnet': pfc, 'actorcritic': bg, 'stim': stim, 'pfc': resp, 'stria': stria,
+                'vals': vals, 'performance': performance}, '..//Data//schizonet.pt')
 
 if plot_models:
     # initialize
     #print('\r Plotting beliefnet', end='\n')
     #data_pfc = torch.load('..//Data//beliefnet.pt')
     #plot_beliefnet(data_pfc, seed=1)
-    print('\r Plotting actorcritic', end='\n')
-    data_bg = torch.load('..//Data//actorcritic.pt')
-    plot_actorcritic(data_bg, seed=1)
+    # print('\r Plotting actorcritic', end='\n')
+    # data_bg = torch.load('..//Data//actorcritic.pt')
+    # plot_actorcritic(data_bg, seed=1)
+    # data_belief_actorcritic = torch.load('..//Data//belief_actorcritic.pt')
+    # plot_belief_actorcritic(data_belief_actorcritic, seed=1)
     data_belief_actorcritic = torch.load('..//Data//belief_actorcritic.pt')
-    plot_belief_actorcritic(data_belief_actorcritic, seed=1)
+    data_schizo = torch.load('..//Data//schizonet.pt')
+    plot_schizo(data_belief_actorcritic, data_schizo)

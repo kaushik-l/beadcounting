@@ -230,8 +230,8 @@ def train_bg(arch='BG', N=64, S=2, Rc=1, Ra=3, task='beads-choice', maxsamples=1
     return net, task, algo, learning
 
 
-def combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10, context=(.65, .85),
-                   rewards=(20, -200, -2), gains=(1, 1), seed=1):
+def combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10, context=(.65, .85), noise=0, circular=False,
+                   rewards=(20, -200, -2), gains=(1, 1), amplification=1, seed=1):
 
     npr.seed(seed=seed)
     # frequently used vars
@@ -246,6 +246,7 @@ def combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10, context=(.6
     sites = ('ws', 'J', 'wr')
     for site in sites:
         setattr(pfc, site, getattr(pfc, site).detach().numpy())
+    pfc.J *= amplification
 
     # variables to save
     contexts, jars, beliefs = [], [], []
@@ -334,10 +335,11 @@ def combine_pfc_bg(pfc, bg, task, algo, Nepochs=1000, maxsamples=10, context=(.6
                         break
 
             # pfc update
-            Iin = np.matmul(pfc.ws, np.array([s, context])[:, None])     # input current
+            ctx = np.max(ua[ti-1]) if (circular and ti > 0) else context
+            Iin = np.matmul(pfc.ws, np.array([s, ctx])[:, None])     # input current
             Irec = np.matmul(pfc.J, h)                          # recurrent current
             z = Iin + Irec                                      # potential
-            h = (1 - dt) * h + dt * (pfc.f(z))  # + 0.02 * npr.rand(N_pfc, 1)                  # activity
+            h = (1 - dt) * h + dt * (pfc.f(z)) + noise * npr.rand(N_pfc, 1)                  # activity
             u = np.matmul(pfc.wr, h)                            # output
 
             # striatal update
@@ -760,4 +762,117 @@ def plot_belief_actorcritic(data, seed=1):
     plt.xticks(ticks=[5, 6, 7, 8], labels=['4', '3', '2', '1']),
     plt.xlabel('Samples to decision')
     plt.legend(['diff_corr', 'easy_corr', 'diff_incorr', 'easy_incorr'], loc='lower left')
+    plt.show()
+
+
+def plot_schizo(control, schizo):
+
+    # load performance variables
+    contexts1, jars1, actions1, samples1 = control['performance']['contexts'], control['performance']['jars'], \
+                                       control['performance']['actions'], control['performance']['samples']
+    contexts2, jars2, actions2, samples2 = schizo['performance']['contexts'], schizo['performance']['jars'], \
+                                       schizo['performance']['actions'], schizo['performance']['samples']
+
+    # trial types
+    trl_diff1 = (np.array(contexts1) == 0.65).flatten()
+    trl_easy1 = (np.array(contexts1) == 0.85).flatten()
+    trl_diff2 = (np.array(contexts2) == 0.65).flatten()
+    trl_easy2 = (np.array(contexts2) == 0.85).flatten()
+
+    # plot performance
+    fig = plt.figure(constrained_layout=True)
+    gs = GridSpec(1, 3, figure=fig)
+
+    # accuracy in difficult context
+    # controls
+    correct_A = np.sum(np.array(actions1)[np.bitwise_and(trl_diff1, np.array(jars1) == 0)] == 0)
+    correct_B = np.sum(np.array(actions1)[np.bitwise_and(trl_diff1, np.array(jars1) == 1)] == 1)
+    incorrect_A = np.sum(np.array(actions1)[np.bitwise_and(trl_diff1, np.array(jars1) == 0)] == 1)
+    incorrect_B = np.sum(np.array(actions1)[np.bitwise_and(trl_diff1, np.array(jars1) == 1)] == 0)
+    nochoice1 = np.sum(np.array(actions1)[trl_diff1] == 2)
+    correct1, incorrect1 = correct_A + correct_B, incorrect_A + incorrect_B
+    total1 = correct1 + incorrect1 + nochoice1
+    control_means = np.array([correct1 / total1, incorrect1 / total1, nochoice1 / total1])
+    # schizo
+    correct_A = np.sum(np.array(actions2)[np.bitwise_and(trl_diff2, np.array(jars2) == 0)] == 0)
+    correct_B = np.sum(np.array(actions2)[np.bitwise_and(trl_diff2, np.array(jars2) == 1)] == 1)
+    incorrect_A = np.sum(np.array(actions2)[np.bitwise_and(trl_diff2, np.array(jars2) == 0)] == 1)
+    incorrect_B = np.sum(np.array(actions2)[np.bitwise_and(trl_diff2, np.array(jars2) == 1)] == 0)
+    nochoice2 = np.sum(np.array(actions2)[trl_diff2] == 2)
+    correct2, incorrect2 = correct_A + correct_B, incorrect_A + incorrect_B
+    total2 = correct2 + incorrect2 + nochoice2
+    schizo_means = np.array([correct2 / total2, incorrect2 / total2, nochoice2 / total2])
+
+    ax1 = fig.add_subplot(gs[0, 0])
+    x = np.arange(3)  # the label locations
+    width = 0.35  # the width of the bars
+    plt.bar(x - width / 2, control_means, width, label='Control')
+    plt.gca().set_prop_cycle(None)
+    plt.bar(x + width / 2, schizo_means, width, label='Schizo', alpha=.5)
+    plt.legend(fontsize=16)
+    plt.ylim((0, 1)), plt.xticks(ticks=[0, 1, 2], labels=['correct', 'incorrect', 'no response'])
+    plt.title('Difficult context')
+    plt.ylabel('Probability')
+
+    # accuracy in easy context
+    # controls
+    correct_A = np.sum(np.array(actions1)[np.bitwise_and(trl_easy1, np.array(jars1) == 0)] == 0)
+    correct_B = np.sum(np.array(actions1)[np.bitwise_and(trl_easy1, np.array(jars1) == 1)] == 1)
+    incorrect_A = np.sum(np.array(actions1)[np.bitwise_and(trl_easy1, np.array(jars1) == 0)] == 1)
+    incorrect_B = np.sum(np.array(actions1)[np.bitwise_and(trl_easy1, np.array(jars1) == 1)] == 0)
+    nochoice1 = np.sum(np.array(actions1)[trl_easy1] == 2)
+    correct1, incorrect1 = correct_A + correct_B, incorrect_A + incorrect_B
+    total1 = correct1 + incorrect1 + nochoice1
+    control_means = np.array([correct1 / total1, incorrect1 / total1, nochoice1 / total1])
+    # schizo
+    correct_A = np.sum(np.array(actions2)[np.bitwise_and(trl_easy2, np.array(jars2) == 0)] == 0)
+    correct_B = np.sum(np.array(actions2)[np.bitwise_and(trl_easy2, np.array(jars2) == 1)] == 1)
+    incorrect_A = np.sum(np.array(actions2)[np.bitwise_and(trl_easy2, np.array(jars2) == 0)] == 1)
+    incorrect_B = np.sum(np.array(actions2)[np.bitwise_and(trl_easy2, np.array(jars2) == 1)] == 0)
+    nochoice2 = np.sum(np.array(actions2)[trl_easy2] == 2)
+    correct2, incorrect2 = correct_A + correct_B, incorrect_A + incorrect_B
+    total2 = correct2 + incorrect2 + nochoice2
+    schizo_means = np.array([correct2 / total2, incorrect2 / total2, nochoice2 / total2])
+
+    ax1 = fig.add_subplot(gs[0, 1])
+    x = np.arange(3)  # the label locations
+    width = 0.35  # the width of the bars
+    prop_cycle = plt.rcParams['axes.prop_cycle']
+    colors = cycle(prop_cycle.by_key()['color'])
+    next(colors)
+    plt.bar(x - width / 2, control_means, width, label='Control', color=next(colors))
+    plt.gca().set_prop_cycle(None)
+    prop_cycle = plt.rcParams['axes.prop_cycle']
+    colors = cycle(prop_cycle.by_key()['color'])
+    next(colors)
+    plt.bar(x + width / 2, schizo_means, width, label='Schizo', alpha=.5, color=next(colors))
+    plt.legend(fontsize=16)
+    plt.ylim((0, 1)), plt.xticks(ticks=[0, 1, 2], labels=['correct', 'incorrect', 'no response'])
+    plt.title('Easy context')
+    plt.ylabel('Probability')
+
+    # number of samples to decision
+    ax1 = fig.add_subplot(gs[0, 2])
+    # control
+    x1, y1 = ecdf(np.array(samples1)[trl_diff1])
+    x1 = np.insert(x1, 0, x1[0])
+    y1 = np.insert(y1, 0, 0.)
+    x2, y2 = ecdf(np.array(samples1)[trl_easy1])
+    x2 = np.insert(x2, 0, x2[0])
+    y2 = np.insert(y2, 0, 0.)
+    plt.plot(x1, y1, drawstyle='steps-post')
+    plt.plot(x2, y2, drawstyle='steps-post')
+    # schizo
+    x1, y1 = ecdf(np.array(samples2)[trl_diff2])
+    x1 = np.insert(x1, 0, x1[0])
+    y1 = np.insert(y1, 0, 0.)
+    x2, y2 = ecdf(np.array(samples2)[trl_easy2])
+    x2 = np.insert(x2, 0, x2[0])
+    y2 = np.insert(y2, 0, 0.)
+    plt.gca().set_prop_cycle(None)
+    plt.plot(x1, y1, drawstyle='steps-post', linestyle='dashed')
+    plt.plot(x2, y2, drawstyle='steps-post', linestyle='dashed')
+    plt.legend(['difficult context', 'easy context'], loc='best')
+    plt.xlabel('Number of samples'), plt.ylabel('Cumulative prob.')
+    plt.suptitle('Circular inference')
     plt.show()
